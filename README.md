@@ -26,7 +26,7 @@ A jewelry store product management desktop application with Arabic interface. Ma
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/Qintar-Inventory.git
+git clone https://github.com/malzamel/Qintar-Inventory.git
 cd Qintar-Inventory
 
 # Create virtual environment (recommended)
