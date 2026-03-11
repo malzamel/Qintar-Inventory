@@ -30,6 +30,11 @@ import pandas as pd
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from PIL import Image, ImageTk
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass  # HEIC/HEIF support optional if pillow-heif not installed
 import os
 import glob
 from datetime import datetime
@@ -1322,8 +1327,8 @@ class JewelryStoreManager:
         # Clear existing images
         self.root.after(0, self._clear_image_widgets)
 
-        # Supported image formats
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp']
+        # Supported image formats (includes iPhone HEIC/HEIF)
+        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.webp', '*.heic', '*.heif']
         self.image_files = []
 
         for ext in image_extensions:
