@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 class ImageCache:
     """Cache for thumbnail images to improve performance"""
 
-    def __init__(self, max_size: int = 100):
+    def __init__(self, max_size: int = 300):
         self.cache = {}
         self.max_size = max_size
 
@@ -612,12 +612,6 @@ class JewelryStoreManager:
         buttons_frame = tk.Frame(middle_frame, bg=self.purple_color)
         buttons_frame.pack(fill=tk.X, pady=(10, 5), padx=5)
 
-        # Remove button
-        remove_btn = tk.Button(buttons_frame, text="❌ إزالة الصورة المحددة",
-                               command=self.remove_selected_image,
-                               bg=self.light_purple, fg='white', font=self.button_font)
-        remove_btn.pack(fill=tk.X, pady=(0, 5))
-
         # Reorder button
         reorder_btn = tk.Button(buttons_frame, text="🔄 ترتيب الصور",
                                 command=self.reorder_images,
@@ -626,7 +620,7 @@ class JewelryStoreManager:
 
         # Instructions label
         instructions = tk.Label(buttons_frame,
-                                text="انقر على صورة لتحديدها\nزر الماوس الأيمن لنسخ مسار الصورة",
+                                text="إضافة: انقر على صورة من اليسار\nإزالة: انقر ✖ أو دبل-كليك على الصورة",
                                 font=('Arial', 8), foreground='white', bg=self.purple_color, justify=tk.CENTER)
         instructions.pack(pady=(5, 0))
 
@@ -1349,57 +1343,65 @@ class JewelryStoreManager:
             widget.destroy()
         self.image_widgets = []
 
-    def _load_images_batch(self, start_index, batch_size=20):
-        """Load images in batches for better performance"""
+    def _load_images_batch(self, start_index, batch_size=50):
+        """Load images in batches - decode/resize in background thread, PhotoImage+widgets on main thread"""
         if start_index >= len(self.image_files):
             self.update_all_image_borders()
             self.update_status_bar()
             return
 
         end_index = min(start_index + batch_size, len(self.image_files))
+        paths_batch = self.image_files[start_index:end_index]
 
+        def load_thumbs():
+            results = []
+            thumb_size = (80, 80)
+            for image_path in paths_batch:
+                try:
+                    cached = self.image_cache.get(image_path, thumb_size)
+                    if cached:
+                        results.append((image_path, cached, True))  # True = already PhotoImage
+                    else:
+                        img = Image.open(image_path).copy()
+                        img.thumbnail(thumb_size, Image.Resampling.BILINEAR)  # Faster than LANCZOS
+                        results.append((image_path, img, False))  # False = PIL Image, need PhotoImage on main
+                except Exception as e:
+                    logger.error(f"Error loading image {image_path}: {e}")
+            self.root.after(0, lambda: self._create_image_widgets_batch(results, start_index, end_index))
+
+        threading.Thread(target=load_thumbs, daemon=True).start()
+
+    def _create_image_widgets_batch(self, results, start_index, end_index):
+        """Create image widgets on main thread (PhotoImage must be created here)"""
         row = start_index // 3
         col = start_index % 3
+        thumb_size = (80, 80)
 
-        for i in range(start_index, end_index):
-            image_path = self.image_files[i]
+        for image_path, img_or_photo, is_photo in results:
             try:
-                # Check cache first
-                photo = self.image_cache.get(image_path, (80, 80))
+                if is_photo:
+                    photo = img_or_photo
+                else:
+                    photo = ImageTk.PhotoImage(img_or_photo)
+                    self.image_cache.set(image_path, thumb_size, photo)
 
-                if not photo:
-                    # Create thumbnail
-                    img = Image.open(image_path)
-                    img.thumbnail((80, 80), Image.Resampling.LANCZOS)
-                    photo = ImageTk.PhotoImage(img)
-                    self.image_cache.set(image_path, (80, 80), photo)
-
-                # Create frame for image
                 img_frame = tk.Frame(self.scrollable_frame, relief=tk.RAISED, borderwidth=2, bg='white')
                 img_frame.grid(row=row, column=col, padx=5, pady=5)
 
-                # Create label with image
                 img_label = tk.Label(img_frame, image=photo, cursor="hand2", bg='white')
                 img_label.image = photo
                 img_label.pack()
 
-                # Truncate filename for display
                 filename = os.path.basename(image_path)
                 display_name = filename[:15] + "..." if len(filename) > 15 else filename
-
-                # Image name label with tooltip
                 name_label = tk.Label(img_frame, text=display_name, font=('Arial', 8), bg='white')
                 name_label.pack()
-
-                # Create tooltip for full filename
                 self._create_tooltip(name_label, filename)
 
-                # Bind events
                 img_label.bind('<Button-1>', lambda e, path=image_path: self.select_image(path))
                 img_label.bind('<Double-Button-1>', lambda e, path=image_path: self.show_full_image(path))
                 img_label.bind('<Button-3>', lambda e, path=image_path: self.show_image_context_menu(e, path))
 
-                # Store references
                 img_label.frame = img_frame
                 img_label.image_path = image_path
                 self.image_widgets.append(img_label)
@@ -1408,12 +1410,10 @@ class JewelryStoreManager:
                 if col >= 3:
                     col = 0
                     row += 1
-
             except Exception as e:
-                logger.error(f"Error loading image {image_path}: {e}")
+                logger.error(f"Error creating widget for {image_path}: {e}")
 
-        # Schedule next batch
-        self.root.after(10, lambda: self._load_images_batch(end_index))
+        self.root.after(5, lambda: self._load_images_batch(end_index))
 
     def _create_tooltip(self, widget, text):
         """Create tooltip for widget"""
@@ -1720,13 +1720,20 @@ class JewelryStoreManager:
 
                 if not photo:
                     img = Image.open(image_path)
-                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                    img.thumbnail((100, 100), Image.Resampling.BILINEAR)
                     photo = ImageTk.PhotoImage(img)
                     self.image_cache.set(image_path, (100, 100), photo)
 
-                # Create frame
+                # Create frame with remove button
                 img_frame = tk.Frame(self.selected_images_frame, relief=tk.RAISED, borderwidth=1, bg='white')
                 img_frame.pack(pady=5, fill=tk.X)
+
+                # Remove button - one-click to remove
+                remove_btn = tk.Button(img_frame, text="✖", font=('Arial', 10, 'bold'),
+                                      bg='#FFCDD2', fg='#C62828', bd=1, width=2, cursor="hand2",
+                                      command=lambda idx=i: self.remove_image_at_index(idx))
+                remove_btn.pack(side=tk.RIGHT, padx=3, pady=3)
+                self._create_tooltip(remove_btn, "إزالة من المنتج")
 
                 # Image label
                 img_label = tk.Label(img_frame, image=photo, cursor="hand2", bg='white')
@@ -1741,9 +1748,11 @@ class JewelryStoreManager:
                 tk.Label(info_frame, text=os.path.basename(image_path),
                          font=('Arial', 8), wraplength=180, bg='white').pack(anchor='w')
 
-                # Bind events
+                # Bind events: single-click to select (for Delete key), double-click to remove, right-click for menu
                 img_label.bind('<Button-1>', lambda e, idx=i: self.select_image_for_removal(idx))
                 img_frame.bind('<Button-1>', lambda e, idx=i: self.select_image_for_removal(idx))
+                img_label.bind('<Double-Button-1>', lambda e, idx=i: self.remove_image_at_index(idx))
+                img_frame.bind('<Double-Button-1>', lambda e, idx=i: self.remove_image_at_index(idx))
                 img_label.bind('<Button-3>', lambda e, path=image_path: self.show_selected_image_menu(e, path))
 
                 img_frame.image_index = i
@@ -1753,6 +1762,10 @@ class JewelryStoreManager:
 
     def show_selected_image_menu(self, event, image_path):
         """Show context menu for selected image"""
+        if self.current_product_index not in self.all_selected_images:
+            return
+        idx = self.all_selected_images[self.current_product_index].index(image_path)
+
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="📋 نسخ المسار",
                          command=lambda: self.copy_to_clipboard(image_path))
@@ -1760,15 +1773,31 @@ class JewelryStoreManager:
                          command=lambda: self.show_full_image(image_path))
         menu.add_separator()
         menu.add_command(label="❌ إزالة من المنتج",
-                         command=self.remove_selected_image)
+                         command=lambda: self.remove_image_at_index(idx))
 
         menu.tk_popup(event.x_root, event.y_root)
 
-    def select_image_for_removal(self, index):
-        """Select an image for removal"""
-        self.selected_image_for_removal = index
+    def remove_image_at_index(self, index):
+        """Remove image at index from current product - direct one-click remove"""
+        if self.current_product_index not in self.all_selected_images:
+            return
+        if index < 0 or index >= len(self.all_selected_images[self.current_product_index]):
+            return
 
-        # Update visual selection
+        self.save_state_for_undo()
+        removed = self.all_selected_images[self.current_product_index].pop(index)
+        self.selected_image_for_removal = -1
+        self.mark_data_modified()
+
+        self.display_selected_images()
+        self.update_all_image_borders()
+        self.update_status_bar()
+        self.update_row_highlighting()
+        self.show_toast("تم الحذف", f"تم إزالة {os.path.basename(removed)}")
+
+    def select_image_for_removal(self, index):
+        """Select an image for removal (enables Delete key)"""
+        self.selected_image_for_removal = index
         for widget in self.selected_images_frame.winfo_children():
             if hasattr(widget, 'image_index'):
                 if widget.image_index == index:
@@ -1777,26 +1806,9 @@ class JewelryStoreManager:
                     widget.configure(bg='white', relief=tk.RAISED, borderwidth=1)
 
     def remove_selected_image(self):
-        """Remove selected image from current product"""
-        if (self.current_product_index not in self.all_selected_images or
-                self.selected_image_for_removal < 0):
-            return
-
-        self.save_state_for_undo()
-
-        if self.selected_image_for_removal < len(self.all_selected_images[self.current_product_index]):
-            removed = self.all_selected_images[self.current_product_index].pop(self.selected_image_for_removal)
-            self.selected_image_for_removal = -1
-            self.mark_data_modified()
-
-            self.display_selected_images()
-            self.update_all_image_borders()
-            self.update_status_bar()
-
-            # Update row highlighting
-            self.update_row_highlighting()
-
-            self.show_toast("تم الحذف", f"تم إزالة {os.path.basename(removed)}")
+        """Remove selected image from current product (used by Delete key)"""
+        if self.selected_image_for_removal >= 0:
+            self.remove_image_at_index(self.selected_image_for_removal)
 
     def delete_selected_image(self):
         """Delete selected image using Delete key"""
