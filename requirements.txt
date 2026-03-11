@@ -1,0 +1,6 @@
+# Qintar Inventory - Dependencies
+# Python 3.8+ required
+
+pandas>=1.5.0
+openpyxl>=3.0.0
+Pillow>=9.0.0
